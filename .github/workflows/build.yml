@@ -51,8 +51,8 @@ jobs:
                   applicationId 'site.dexme.app'
                   minSdk 26
                   targetSdk 34
-                  versionCode 2
-                  versionName '1.1'
+                  versionCode 3
+                  versionName '1.2'
               }
               signingConfigs {
                   dexme {
@@ -223,6 +223,8 @@ jobs:
               // Notification dabane par wahi page khule (history / transactions)
               String startUrl(Intent in) {
                   if (in == null) return null;
+                  String nid = in.getStringExtra("nid");
+                  if (nid != null && nid.matches("\\d{1,10}")) return HOME + "n.php?i=" + nid;   // admin notification: click count + image/link
                   String p = in.getStringExtra("url");
                   if (p == null || p.isEmpty() || p.startsWith("http") || p.contains("..")) return null;
                   return HOME + p;
@@ -277,8 +279,14 @@ jobs:
           import android.app.NotificationManager;
           import android.app.PendingIntent;
           import android.content.Intent;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
           import com.google.firebase.messaging.FirebaseMessagingService;
           import com.google.firebase.messaging.RemoteMessage;
+          import java.io.ByteArrayOutputStream;
+          import java.io.InputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
           import java.util.Map;
 
           public class PushService extends FirebaseMessagingService {
@@ -286,7 +294,7 @@ jobs:
 
               @Override public void onMessageReceived(RemoteMessage m) {
                   Map<String, String> d = m.getData();
-                  String title = d.get("title"), body = d.get("body"), url = d.get("url");
+                  String title = d.get("title"), body = d.get("body"), url = d.get("url"), nid = d.get("nid"), image = d.get("image");
                   if (title == null && m.getNotification() != null) { title = m.getNotification().getTitle(); body = m.getNotification().getBody(); }
                   if (title == null) title = "DEXME";
                   if (body == null) body = "";
@@ -297,19 +305,48 @@ jobs:
                   Intent i = new Intent(this, MainActivity.class);
                   i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
                   if (url != null) i.putExtra("url", url);
+                  if (nid != null) i.putExtra("nid", nid);
                   int id = (int) (System.currentTimeMillis() & 0x7fffffff);
                   PendingIntent pi = PendingIntent.getActivity(this, id, i, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
 
-                  Notification n = new Notification.Builder(this, CH)
+                  Notification.Builder b = new Notification.Builder(this, CH)
                           .setSmallIcon(R.drawable.ic_notif)
                           .setColor(0xFF6D28D9)
                           .setContentTitle(title)
                           .setContentText(body)
-                          .setStyle(new Notification.BigTextStyle().bigText(body))
                           .setContentIntent(pi)
-                          .setAutoCancel(true)
-                          .build();
-                  nm.notify(id, n);
+                          .setAutoCancel(true);
+
+                  Bitmap bmp = (image != null && image.startsWith("http")) ? download(image) : null;
+                  if (bmp != null) {
+                      b.setLargeIcon(bmp);
+                      b.setStyle(new Notification.BigPictureStyle().bigPicture(bmp).bigLargeIcon((Bitmap) null).setSummaryText(body));
+                  } else {
+                      b.setStyle(new Notification.BigTextStyle().bigText(body));
+                  }
+                  nm.notify(id, b.build());
+              }
+
+              // Image/GIF download (GIF ka pehla frame). Badi image ko chhota karke (max ~1080px) dikhate hain.
+              Bitmap download(String u) {
+                  try {
+                      HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
+                      c.setConnectTimeout(8000); c.setReadTimeout(12000);
+                      InputStream in = c.getInputStream();
+                      ByteArrayOutputStream o = new ByteArrayOutputStream();
+                      byte[] buf = new byte[16384]; int n; long tot = 0;
+                      while ((n = in.read(buf)) > 0) { tot += n; if (tot > 20L * 1024 * 1024) { in.close(); return null; } o.write(buf, 0, n); }
+                      in.close();
+                      byte[] data = o.toByteArray();
+                      BitmapFactory.Options op = new BitmapFactory.Options();
+                      op.inJustDecodeBounds = true;
+                      BitmapFactory.decodeByteArray(data, 0, data.length, op);
+                      int s = 1;
+                      while (op.outWidth / s > 1080 || op.outHeight / s > 1620) s *= 2;
+                      op = new BitmapFactory.Options();
+                      op.inSampleSize = s;
+                      return BitmapFactory.decodeByteArray(data, 0, data.length, op);
+                  } catch (Throwable t) { return null; }
               }
 
               @Override public void onNewToken(String token) { /* app khulne par naya token apne aap save ho jata hai */ }
