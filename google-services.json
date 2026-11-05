@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1014322513752",
+    "project_id": "dexme-noti-1",
+    "storage_bucket": "dexme-noti-1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1014322513752:android:acb8624b1c550528cc472d",
+        "android_client_info": {
+          "package_name": "site.dexme.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDajB_wlCdaKeC-jBvGrr5Z69_qIbNUa60"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
