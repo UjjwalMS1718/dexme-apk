@@ -29,7 +29,10 @@ jobs:
           DEXEOF0
           mkdir -p .
           cat > 'build.gradle' <<'DEXEOF1'
-          plugins { id 'com.android.application' version '8.5.2' apply false }
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+              id 'com.google.gms.google-services' version '4.4.2' apply false
+          }
           DEXEOF1
           mkdir -p .
           cat > 'gradle.properties' <<'DEXEOF2'
@@ -37,7 +40,10 @@ jobs:
           DEXEOF2
           mkdir -p 'app'
           cat > 'app/build.gradle' <<'DEXEOF3'
-          plugins { id 'com.android.application' }
+          plugins {
+              id 'com.android.application'
+              id 'com.google.gms.google-services'
+          }
           android {
               namespace 'site.dexme.app'
               compileSdk 34
@@ -45,11 +51,26 @@ jobs:
                   applicationId 'site.dexme.app'
                   minSdk 26
                   targetSdk 34
-                  versionCode 1
-                  versionName '1.0'
+                  versionCode 2
+                  versionName '1.1'
               }
-              buildTypes { release { minifyEnabled false } }
+              signingConfigs {
+                  dexme {
+                      storeFile file('../dexme.jks')
+                      storePassword 'dexme-ks-2026'
+                      keyAlias 'dexme'
+                      keyPassword 'dexme-ks-2026'
+                  }
+              }
+              buildTypes {
+                  debug { if (file('../dexme.jks').exists()) signingConfig signingConfigs.dexme }
+                  release { minifyEnabled false }
+              }
               compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+          }
+          dependencies {
+              implementation platform('com.google.firebase:firebase-bom:33.1.2')
+              implementation 'com.google.firebase:firebase-messaging'
           }
           DEXEOF3
           mkdir -p 'app/src/main'
@@ -58,6 +79,7 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET"/>
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
               <queries>
                   <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="upi"/></intent>
                   <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="phonepe"/></intent>
@@ -71,6 +93,7 @@ jobs:
                   android:usesCleartextTraffic="false"
                   android:theme="@style/AppTheme">
                   <activity android:name=".MainActivity" android:exported="true"
+                      android:launchMode="singleTop"
                       android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
                       android:windowSoftInputMode="adjustResize">
                       <intent-filter>
@@ -78,6 +101,9 @@ jobs:
                           <category android:name="android.intent.category.LAUNCHER"/>
                       </intent-filter>
                   </activity>
+                  <service android:name=".PushService" android:exported="false">
+                      <intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT"/></intent-filter>
+                  </service>
               </application>
           </manifest>
           DEXEOF4
@@ -98,15 +124,21 @@ jobs:
               <path android:fillColor="#FFFFFF" android:pathData="M34,30h20c13,0 20,8 20,24s-7,24 -20,24h-20z M44,40v28h9c7,0 11,-5 11,-14s-4,-14 -11,-14z" android:fillType="evenOdd"/>
           </vector>
           DEXEOF6
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/ic_notif.xml' <<'DEXEOF7'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+              <path android:fillColor="#FFFFFF" android:pathData="M7,5h6c3.5,0 5.5,2.4 5.5,7s-2,7 -5.5,7h-6z M10,8v8h3c1.8,0 2.7,-1.3 2.7,-4s-0.9,-4 -2.7,-4z" android:fillType="evenOdd"/>
+          </vector>
+          DEXEOF7
           mkdir -p 'app/src/main/res/mipmap-anydpi-v26'
-          cat > 'app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml' <<'DEXEOF7'
+          cat > 'app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml' <<'DEXEOF8'
           <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
               <background android:drawable="@color/ic_bg"/>
               <foreground android:drawable="@drawable/ic_fg"/>
           </adaptive-icon>
-          DEXEOF7
+          DEXEOF8
           mkdir -p 'app/src/main/java/site/dexme/app'
-          cat > 'app/src/main/java/site/dexme/app/MainActivity.java' <<'DEXEOF8'
+          cat > 'app/src/main/java/site/dexme/app/MainActivity.java' <<'DEXEOF9'
           package site.dexme.app;
 
           import android.app.Activity;
@@ -126,6 +158,7 @@ jobs:
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
           import android.widget.Toast;
+          import com.google.firebase.messaging.FirebaseMessaging;
 
           public class MainActivity extends Activity {
               // Aapki live website (user panel). Database isi server se connected rehta hai.
@@ -133,6 +166,8 @@ jobs:
               static final String HOST = "dexme.site";
 
               WebView web;
+              String fcmToken = null;
+              boolean retried = false;
 
               @Override protected void onCreate(Bundle b) {
                   super.onCreate(b);
@@ -158,7 +193,11 @@ jobs:
                       @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
                           return handle(r.getUrl());
                       }
-                      @Override public void onPageFinished(WebView v, String url) { CookieManager.getInstance().flush(); }
+                      @Override public void onPageFinished(WebView v, String url) {
+                          CookieManager.getInstance().flush();
+                          registerPush();
+                          if (!retried) { retried = true; v.postDelayed(new Runnable() { public void run() { registerPush(); } }, 4000); }
+                      }
                       @Override public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError e) {
                           if (r.isForMainFrame()) {
                               v.loadData("<html><body style='font-family:sans-serif;text-align:center;padding:60px 20px'>"
@@ -169,7 +208,38 @@ jobs:
                       }
                   });
 
-                  if (b != null) web.restoreState(b); else web.loadUrl(HOME);
+                  String start = startUrl(getIntent());
+                  if (b != null) web.restoreState(b); else web.loadUrl(start != null ? start : HOME);
+
+                  if (android.os.Build.VERSION.SDK_INT >= 33
+                          && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
+                  }
+                  try {
+                      FirebaseMessaging.getInstance().getToken().addOnSuccessListener(t -> { fcmToken = t; registerPush(); });
+                  } catch (Throwable ignored) {}
+              }
+
+              // Notification dabane par wahi page khule (history / transactions)
+              String startUrl(Intent in) {
+                  if (in == null) return null;
+                  String p = in.getStringExtra("url");
+                  if (p == null || p.isEmpty() || p.startsWith("http") || p.contains("..")) return null;
+                  return HOME + p;
+              }
+
+              @Override protected void onNewIntent(Intent in) {
+                  super.onNewIntent(in);
+                  String u = startUrl(in);
+                  if (u != null) web.loadUrl(u);
+              }
+
+              // Token ko website ke user (cookie) se jod deta hai
+              void registerPush() {
+                  if (fcmToken == null || web == null) return;
+                  String u = web.getUrl();
+                  if (u == null || !u.startsWith(HOME)) return;
+                  web.evaluateJavascript("fetch('" + HOME + "api.php',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'a=fcm&token='+encodeURIComponent('" + fcmToken + "')}).catch(function(){})", null);
               }
 
               boolean handle(Uri u) {
@@ -197,7 +267,64 @@ jobs:
               @Override protected void onPause() { super.onPause(); CookieManager.getInstance().flush(); web.onPause(); }
               @Override public void onBackPressed() { if (web.canGoBack()) web.goBack(); else super.onBackPressed(); }
           }
-          DEXEOF8
+          DEXEOF9
+          mkdir -p 'app/src/main/java/site/dexme/app'
+          cat > 'app/src/main/java/site/dexme/app/PushService.java' <<'DEXEOF10'
+          package site.dexme.app;
+
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.content.Intent;
+          import com.google.firebase.messaging.FirebaseMessagingService;
+          import com.google.firebase.messaging.RemoteMessage;
+          import java.util.Map;
+
+          public class PushService extends FirebaseMessagingService {
+              static final String CH = "dexme_updates";
+
+              @Override public void onMessageReceived(RemoteMessage m) {
+                  Map<String, String> d = m.getData();
+                  String title = d.get("title"), body = d.get("body"), url = d.get("url");
+                  if (title == null && m.getNotification() != null) { title = m.getNotification().getTitle(); body = m.getNotification().getBody(); }
+                  if (title == null) title = "DEXME";
+                  if (body == null) body = "";
+
+                  NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                  nm.createNotificationChannel(new NotificationChannel(CH, "Order & Fund updates", NotificationManager.IMPORTANCE_HIGH));
+
+                  Intent i = new Intent(this, MainActivity.class);
+                  i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                  if (url != null) i.putExtra("url", url);
+                  int id = (int) (System.currentTimeMillis() & 0x7fffffff);
+                  PendingIntent pi = PendingIntent.getActivity(this, id, i, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+
+                  Notification n = new Notification.Builder(this, CH)
+                          .setSmallIcon(R.drawable.ic_notif)
+                          .setColor(0xFF6D28D9)
+                          .setContentTitle(title)
+                          .setContentText(body)
+                          .setStyle(new Notification.BigTextStyle().bigText(body))
+                          .setContentIntent(pi)
+                          .setAutoCancel(true)
+                          .build();
+                  nm.notify(id, n);
+              }
+
+              @Override public void onNewToken(String token) { /* app khulne par naya token apne aap save ho jata hai */ }
+          }
+          DEXEOF10
+      - name: Add Firebase file (google-services.json)
+        run: |
+          if [ ! -f google-services.json ]; then echo "ERROR: google-services.json repository ke root me upload karein"; exit 1; fi
+          if ! grep -q 'site.dexme.app' google-services.json; then echo "ERROR: Firebase me package name site.dexme.app hona chahiye"; exit 1; fi
+          cp google-services.json proj/app/google-services.json
+      - name: Signing key (fixed, taaki update purane app par install ho)
+        env:
+          KS: ${{ secrets.DEXME_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS" ]; then echo "$KS" | base64 -d > proj/dexme.jks; echo "Fixed signing key use ho rahi hai"; else echo "WARNING: secret DEXME_KEYSTORE_B64 nahi mila - temporary key (update par purana app hatana padega)"; fi
       - name: Build APK
         run: cd proj && gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
